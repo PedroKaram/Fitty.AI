@@ -1,55 +1,67 @@
 from flask import Flask, request, jsonify
 from openai import OpenAI
-import json
+from langchain_openai import ChatOpenAI
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain.memory import ConversationBufferMemory
 import yaml
-import os
 
-with open ("config.yaml") as f:
+# Carrega config.yaml
+with open("config.yaml") as f:
     cfg = yaml.load(f, Loader=yaml.FullLoader)
 
+# Flask app
 app = Flask(__name__)
-client = OpenAI(api_key=cfg["api_key"]["key"])
 
-def load_history():
-    if not os.path.exists("storage.json"):
-        return {}
-    with open("storage.json", "r") as f:
-        try:
-            return json.load(f)
-        except:
-            return {}
+# LLM do LangChain
+llm = ChatOpenAI(
+    api_key=cfg["api_key"]["key"],
+    model=cfg["model"]["name"]
+)
 
-def save_history(history):
-    with open("storage.json", "w") as f:
-        json.dump(history, f, indent=2)
+# Buffer de memória do LangChain
+memory = ConversationBufferMemory(
+    memory_key="history",
+    return_messages=True
+)
 
-@app.route('/chat', methods=['POST'])
+# Template do prompt
+prompt = PromptTemplate(
+    input_variables=["history", "input"],
+    template="""
+Você é um nutricionista virtual amigável, prático e direto.
+
+No início da conversa, colete: peso (kg), altura (cm), idade, sexo e nível de atividade física.
+Use essas informações para calcular TMB e TDEE. Apresente resultados de forma resumida, sem contas detalhadas.
+Depois, peça detalhes das refeições do dia, estime calorias consumidas, diga se está em déficit ou superávit.
+
+Histórico da conversa até agora:
+{history}
+
+Nova mensagem do usuário:
+{input}
+
+Responda de forma amigável, prática e sem repetir perguntas já respondidas.
+"""
+)
+
+# Cria o chain
+chain = LLMChain(
+    llm=llm,
+    prompt=prompt,
+    memory=memory
+)
+
+# Endpoint Flask
+@app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
-    user_name = data.get("name")
-    user_message = data.get("message")
+    user_input = data.get("message")
 
-    history = load_history()
+    # Executa o chain
+    response = chain.run(input=user_input)
 
-    if user_name not in history:
-        history[user_name] = [
-            {"role": "system", "content": "Você é um nutricionista amigável que acompanha a dieta do usuário e conversa de forma contínua."}
-        ]
-
-    history[user_name].append({"role": "user", "content": user_message})
-
-    response = client.chat.completions.create(
-        model=cfg["model"]["name"],
-        messages=history[user_name]
-    )
-
-    assistant_reply = response.choices[0].message.content
-
-    history[user_name].append({"role": "assistant", "content": assistant_reply})
-
-    save_history(history)
-
-    return jsonify({"reply": assistant_reply, "history": history[user_name]})
+    return jsonify({"reply": response})
 
 if __name__ == "__main__":
     app.run(debug=True)
