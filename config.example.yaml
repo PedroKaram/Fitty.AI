@@ -2,3 +2,15 @@ api_key:
   key: ""
 model:
   name: ""    # "gpt-4o"  "gpt-3.5-turbo"  "o3-mini" "o1-mini"
+
+cookie:
+  name: 
+  key: 
+  expiry_days: 
+
+postgres:
+  host: 
+  port: 5432
+  dbname: 
+  user: 
+  password: 
