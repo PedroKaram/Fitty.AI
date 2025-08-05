@@ -2,11 +2,11 @@ import streamlit as st
 import requests
 import uuid
 import yaml
-import pandas as pd
-from pathlib import Path
-from sqlalchemy import create_engine
-import streamlit_authenticator as sauth
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
+import hashlib
 
+# Configuração inicial do banco
 with open("config.yaml", "r") as file:
     config = yaml.safe_load(file)
 
@@ -14,46 +14,76 @@ pg = config["postgres"]
 db_url = f"postgresql://{pg['user']}:{pg['password']}@{pg['host']}:{pg['port']}/{pg['dbname']}"
 engine = create_engine(db_url)
 
-@st.cache_resource
-def load_credentials():
-    query = "SELECT username, email, full_name, password_hash FROM users"
-    df = pd.read_sql(query, engine)
-
-    credentials = {"usernames": {}}
-    for _, row in df.iterrows():
-        credentials["usernames"][row["username"]] = {
-            "email": row["email"],
-            "name": row["full_name"],
-            "password": row["password_hash"]
-        }
-    return credentials
-
-credentials = load_credentials()
-
-authenticator = sauth.Authenticate(
-    credentials,
-    config["cookie"]["name"],
-    config["cookie"]["key"],
-    config["cookie"]["expiry_days"]
+# Configuração visual do Streamlit
+st.set_page_config(
+    page_title="Fitty.AI", 
+    page_icon=None, 
+    layout=None, 
+    initial_sidebar_state="collapsed", 
+    menu_items=None
 )
 
-st.set_page_config(page_title="Fitty.AI", page_icon=None, layout=None, initial_sidebar_state="collapsed", menu_items=None)
+# Inicializa estado de autenticação
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
 
-try:
-    authenticator.login(location="main")
-except Exception as e:
-    st.error(e)
+# Função para hashear senha
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
-if st.session_state.get('authentication_status') is False:
-    st.error('Username/password is incorrect')
-elif st.session_state.get('authentication_status') is None:
-    st.warning('Please enter your username and password')
-elif st.session_state.get('authentication_status'):
-    with st.sidebar:
-        authenticator.logout()
-
+# --- TELA DE LOGIN / CADASTRO ---
+if not st.session_state.authenticated:
     st.markdown("<h1 style='text-align: center;'>Fitty</h1>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center;'>Seu assistente nutricional</h3>", unsafe_allow_html=True)
+
+    auth_mode = st.radio("Escolha uma opção:", ("Login", "Cadastrar"), horizontal=True)
+
+    if auth_mode == "Cadastrar":
+        st.subheader("Crie sua conta")
+        full_name = st.text_input("Nome Completo")
+        email = st.text_input("E-mail")
+        password = st.text_input("Senha", type="password")
+        if st.button("Cadastrar"):
+            if full_name and email and password:
+                hashed_pw = hash_password(password)
+                try:
+                    with engine.connect() as conn:
+                        conn.execute(
+                            text("INSERT INTO users (full_name, email, password) VALUES (:full_name, :email, :password)"),
+                            {"full_name": full_name, "email": email, "password": hashed_pw}
+                        )
+                        conn.commit()
+                    st.success("Usuário cadastrado com sucesso! Faça login para continuar.")
+                except IntegrityError:
+                    st.error("Este e-mail já está em uso")
+            else:
+                st.warning("Preencha todos os campos.")
+
+    elif auth_mode == "Login":
+        st.subheader("Acesse sua conta")
+        email = st.text_input("E-mail")
+        password = st.text_input("Senha", type="password")
+
+        if st.button("Entrar"):
+            if email and password:
+                hashed_pw = hash_password(password)
+                with engine.connect() as conn:
+                    result = conn.execute(
+                        text("SELECT * FROM users WHERE email = :email AND password = :password"),
+                        {"email": email, "password": hashed_pw}
+                    ).fetchone()
+                if result:
+                    st.session_state.authenticated = True
+                    st.session_state.user_email = email
+                    st.rerun()
+                else:
+                    st.error("E-mail ou senha incorretos.")
+            else:
+                st.warning("Preencha todos os campos.")
+
+# --- INTERFACE DO CHAT ---
+if st.session_state.authenticated:
+    st.success(f"Bem-vindo, {st.session_state.user_email}!")
 
     if "client_id" not in st.session_state:
         st.session_state.client_id = str(uuid.uuid4())
@@ -67,9 +97,7 @@ elif st.session_state.get('authentication_status'):
             "client_id": st.session_state.client_id,
             "message": message
         }
-
         response = requests.post(url, json=payload)
-
         if response.status_code == 200:
             return response.json().get("reply", "Erro ao obter a resposta.")
         return f"Erro: {response.status_code} - {response.text}"
@@ -80,7 +108,6 @@ elif st.session_state.get('authentication_status'):
 
     prompt = st.chat_input("Conte o que você comeu ou faça uma pergunta:")
     if prompt:
-
         st.session_state.messages.append({"role": "user", "content": prompt})
         st.chat_message("user").markdown(prompt)
 
